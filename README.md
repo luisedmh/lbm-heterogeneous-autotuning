@@ -1,7 +1,7 @@
 # lbm-heterogeneous-autotuning
 
 Solver LBM (Lattice Boltzmann) 2D para CFD con reparto dinámico de trabajo entre CPU y GPU.
-Proyecto de verano / base de TFG en Ingeniería Informática (ULL), dirigido por Francisco Almeida (GCAP).
+Proyecto de verano.
 
 ## Motivación
 
@@ -12,8 +12,6 @@ de rendimiento en lugar de una configuración fija.
 
 ## Estado actual
 
-🚧 Fase 1 en marcha: esqueleto del proyecto y baseline CPU/GPU con reparto fijo.
-
 | Fase | Contenido | Estado |
 |------|-----------|--------|
 | 1 | Solver LBM D2Q9 funcional en CPU (OpenMP) y GPU (CUDA), reparto fijo | En progreso |
@@ -21,7 +19,7 @@ de rendimiento en lugar de una configuración fija.
 | 3 | Precisión adaptativa por zonas (FP16/FP32) | Exploratorio / trabajo futuro |
 
 ## Estructura del repositorio
-
+ 
 ```
 .
 ├── include/lbm/       Cabeceras públicas (grid, solver)
@@ -42,14 +40,12 @@ se compila igualmente y solo queda activo el backend de CPU.
 ```bash
 make            # compila (detecta automáticamente si hay CUDA disponible)
 make run        # compila y ejecuta con parámetros por defecto
-./bin/lbm --backend cpu --nx 128 --ny 64 --steps 500
-./bin/lbm --backend gpu --nx 128 --ny 64 --steps 500   # requiere compilación con CUDA
 make clean      # limpia binarios y objetos
 ```
 
 ## Añadir código nuevo
 
-El `Makefile` recoge automáticamente **cualquier** archivo `.c` o `.cu` que añadas bajo `src/`,
+El `Makefile` recoge automáticamente **cualquier** archivo `.cc` o `.cu` que añadas bajo `src/`,
 en cualquier subcarpeta. No hace falta editar el `Makefile` para que se compile — solo
 asegúrate de que el `#include` de tu cabecera use la ruta desde `include/`.
 
