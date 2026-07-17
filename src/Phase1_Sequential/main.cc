@@ -4,6 +4,8 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <filesystem>
+#include <cstdlib>
 
 // Dimensiones del dominio
 const int NX = 400;
@@ -35,9 +37,13 @@ inline double equilibrium(int i, double rho, double ux, double uy) { // $$f_i^{e
 }
 
 void save_vtk(int step, const std::vector<Cell>& grid, const std::vector<bool>& obstacle) {
+    namespace fs = std::filesystem;
+    fs::path out_dir = fs::path(std::getenv("HOME")) / "Documents/Proyectos/Informática/HPC/LMB_Autotuning/results/phase1";
+    fs::create_directories(out_dir);
+
     std::stringstream ss;
     ss << "fluid_" << std::setw(4) << std::setfill('0') << step << ".vtk";
-    std::ofstream out(ss.str());
+    std::ofstream out((out_dir / ss.str()).string());
 
     out << "# vtk DataFile Version 3.0\nLBM 2D9Q\nASCII\nDATASET STRUCTURED_POINTS\n";
     out << "DIMENSIONS " << NX << " " << NY << " 1\nORIGIN 0 0 0\nSPACING 1 1 1\n";
