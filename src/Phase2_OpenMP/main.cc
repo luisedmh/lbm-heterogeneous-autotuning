@@ -31,7 +31,54 @@ inline double equilibrium(int i, double rho, double ux, double uy) {
     return w[i] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * u2);
 }
 
-void save_vtk(int step, const std::vector<Cell>& grid, const std::vector<bool>& obstacle);
+// (La función save_vtk se mantiene idéntica para asegurar compatibilidad con ParaView)
+void save_vtk(int step, const std::vector<Cell>& grid, const std::vector<bool>& obstacle) {
+    namespace fs = std::filesystem;
+    fs::path out_dir = fs::path(std::getenv("HOME")) / "Documents/Proyectos/Informática/HPC/LMB_Autotuning/results/phase2";
+    fs::create_directories(out_dir);
+    std::stringstream ss;
+    ss << "fluid_" << std::setw(4) << std::setfill('0') << step << ".vtk";
+    std::ofstream out((out_dir / ss.str()).string());
+
+    out << "# vtk DataFile Version 3.0\nLBM 2D9Q\nASCII\nDATASET STRUCTURED_POINTS\n";
+    out << "DIMENSIONS " << NX << " " << NY << " 1\nORIGIN 0 0 0\nSPACING 1 1 1\n";
+    out << "POINT_DATA " << NX * NY << "\nSCALARS velocity_magnitude double 1\nLOOKUP_TABLE default\n";
+
+    for (int y = 0; y < NY; ++y) {
+        for (int x = 0; x < NX; ++x) {
+            int idx = y * NX + x;
+            if (obstacle[idx]) {
+                out << 0.0 << "\n";
+            } else {
+                double rho = 0, ux = 0, uy = 0;
+                for (int i = 0; i < 9; ++i) {
+                    rho += grid[idx].f[i];
+                    ux  += grid[idx].f[i] * cx[i];
+                    uy  += grid[idx].f[i] * cy[i];
+                }
+                out << std::sqrt((ux/rho)*(ux/rho) + (uy/rho)*(uy/rho)) << "\n";
+            }
+        }
+    }
+
+    out << "VECTORS velocity double\n";
+    for (int y = 0; y < NY; ++y) {
+        for (int x = 0; x < NX; ++x) {
+            int idx = y * NX + x;
+            if (obstacle[idx]) {
+                out << "0.0 0.0 0.0\n";
+            } else {
+                double rho = 0, ux = 0, uy = 0;
+                for (int i = 0; i < 9; ++i) {
+                    rho += grid[idx].f[i];
+                    ux  += grid[idx].f[i] * cx[i];
+                    uy  += grid[idx].f[i] * cy[i];
+                }
+                out << ux/rho << " " << uy/rho << " 0.0\n";
+            }
+        }
+    }
+}
 
 int main() {
     std::vector<Cell> grid(NX * NY);
@@ -145,53 +192,4 @@ int main() {
     std::cout << "Tiempo de cómputo: " << (end_time - start_time) << " segundos." << std::endl;
     std::cout << "=========================================================" << std::endl;
     return 0;
-}
-
-// (La función save_vtk se mantiene idéntica para asegurar compatibilidad con ParaView)
-void save_vtk(int step, const std::vector<Cell>& grid, const std::vector<bool>& obstacle) {
-    namespace fs = std::filesystem;
-    fs::path out_dir = fs::path(std::getenv("HOME")) / "Documents/Proyectos/Informática/HPC/LMB_Autotuning/results/phase2";
-    fs::create_directories(out_dir);
-    std::stringstream ss;
-    ss << "fluid_" << std::setw(4) << std::setfill('0') << step << ".vtk";
-    std::ofstream out((out_dir / ss.str()).string());
-
-    out << "# vtk DataFile Version 3.0\nLBM 2D9Q\nASCII\nDATASET STRUCTURED_POINTS\n";
-    out << "DIMENSIONS " << NX << " " << NY << " 1\nORIGIN 0 0 0\nSPACING 1 1 1\n";
-    out << "POINT_DATA " << NX * NY << "\nSCALARS velocity_magnitude double 1\nLOOKUP_TABLE default\n";
-
-    for (int y = 0; y < NY; ++y) {
-        for (int x = 0; x < NX; ++x) {
-            int idx = y * NX + x;
-            if (obstacle[idx]) {
-                out << 0.0 << "\n";
-            } else {
-                double rho = 0, ux = 0, uy = 0;
-                for (int i = 0; i < 9; ++i) {
-                    rho += grid[idx].f[i];
-                    ux  += grid[idx].f[i] * cx[i];
-                    uy  += grid[idx].f[i] * cy[i];
-                }
-                out << std::sqrt((ux/rho)*(ux/rho) + (uy/rho)*(uy/rho)) << "\n";
-            }
-        }
-    }
-
-    out << "VECTORS velocity double\n";
-    for (int y = 0; y < NY; ++y) {
-        for (int x = 0; x < NX; ++x) {
-            int idx = y * NX + x;
-            if (obstacle[idx]) {
-                out << "0.0 0.0 0.0\n";
-            } else {
-                double rho = 0, ux = 0, uy = 0;
-                for (int i = 0; i < 9; ++i) {
-                    rho += grid[idx].f[i];
-                    ux  += grid[idx].f[i] * cx[i];
-                    uy  += grid[idx].f[i] * cy[i];
-                }
-                out << ux/rho << " " << uy/rho << " 0.0\n";
-            }
-        }
-    }
 }
