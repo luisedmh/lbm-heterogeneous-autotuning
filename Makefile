@@ -1,66 +1,90 @@
-# Makefile genérico: no hay que listar archivos a mano.
-# Cualquier .c o .cu que exista bajo src/ (en cualquier subcarpeta) se compila solo.
+# ==============================================================================
+# Makefile genérico y dinámico para C++ (OpenMP) y CUDA
+# Detecta automáticamente archivos .cc y .cu recursivamente dentro de src/
+# ==============================================================================
 
-CC        := gcc
+CXX       := g++
 NVCC      := nvcc
-CFLAGS    := -O3 -Wall -Wextra -fopenmp -Iinclude
-NVCCFLAGS := -O3 -Iinclude -Xcompiler -fopenmp
+CXXFLAGS  := -O3 -Wall -Wextra -fopenmp
+NVCCFLAGS := -O3 -Xcompiler -fopenmp
 LDFLAGS   := -fopenmp -lm
 
+# Directorios del proyecto
 SRC_DIR   := src
 BUILD_DIR := build
-BIN       := bin/lbm
+BIN_DIR   := bin
+TARGET    := $(BIN_DIR)/lbm
 
-# Wildcard recursivo (GNU Make no tiene ** nativo, esta es la forma estándar de conseguirlo)
+# Detectar automáticamente si existe la carpeta 'include' para añadirla
+ifneq ($(wildcard include),)
+    CXXFLAGS  += -Iinclude
+    NVCCFLAGS += -Iinclude
+endif
+
+# Función para buscar archivos de manera recursiva en subcarpetas
 rwildcard = $(foreach d,$(wildcard $1*),$(call rwildcard,$d/,$2)$(filter $(subst *,%,$2),$d))
 
-C_SOURCES  := $(call rwildcard,$(SRC_DIR)/,*.c)
-CU_SOURCES := $(call rwildcard,$(SRC_DIR)/,*.cu)
+# Buscar todas las fuentes .cc y .cu en 'src/' (ej: src/Phase1_Sequential/main.cc)
+CXX_SOURCES := $(call rwildcard,$(SRC_DIR)/,*.cc)
+CU_SOURCES  := $(call rwildcard,$(SRC_DIR)/,*.cu)
 
-C_OBJECTS  := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(C_SOURCES))
-CU_OBJECTS := $(patsubst $(SRC_DIR)/%.cu,$(BUILD_DIR)/%.o,$(CU_SOURCES))
+# Mapear los archivos de código a sus respectivos archivos de objeto en 'build/'
+CXX_OBJECTS := $(patsubst $(SRC_DIR)/%.cc,$(BUILD_DIR)/%.o,$(CXX_SOURCES))
+CU_OBJECTS  := $(patsubst $(SRC_DIR)/%.cu,$(BUILD_DIR)/%.o,$(CU_SOURCES))
 
-# Detecta si nvcc está disponible. Si no lo está, el proyecto compila igualmente
-# y se queda solo con el backend de CPU (así es usable en cualquier máquina).
+# Detectar si el compilador de NVIDIA (nvcc) está en el sistema
 HAS_CUDA := $(shell command -v $(NVCC) 2>/dev/null)
 
+# El enlazador principal siempre será g++ (CXX) para evitar problemas de OpenMP con nvcc
+LINKER := $(CXX)
+
 ifeq ($(HAS_CUDA),)
-  OBJECTS := $(C_OBJECTS)
-  LINKER  := $(CC)
+    # Si NO hay CUDA: solo compilamos los fuentes .cc
+    OBJECTS := $(CXX_OBJECTS)
 else
-  CFLAGS  += -DUSE_CUDA
-  OBJECTS := $(C_OBJECTS) $(CU_OBJECTS)
-  LDFLAGS += -lcudart
-  LINKER  := $(NVCC)
+    # Si SÍ hay CUDA: activamos flag USE_CUDA, añadimos .cu y linkeamos el runtime de CUDA
+    CXXFLAGS += -DUSE_CUDA
+    OBJECTS  := $(CXX_OBJECTS) $(CU_OBJECTS)
+    LDFLAGS  += -L/usr/local/cuda/lib64 -lcudart
 endif
+
+# --- REGLAS DE COMPILACIÓN ---
 
 .PHONY: all run clean info
 
-all: $(BIN)
+all: $(TARGET)
 
-$(BIN): $(OBJECTS)
+# Fase de Enlace (Linker)
+$(TARGET): $(OBJECTS)
 	@mkdir -p $(dir $@)
 	$(LINKER) $^ -o $@ $(LDFLAGS)
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
+# Compilar C++ (.cc) recreando la estructura de carpetas en build/
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cc
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+# Compilar CUDA (.cu) recreando la estructura de carpetas en build/
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cu
 	@mkdir -p $(dir $@)
 	$(NVCC) $(NVCCFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cc
-        @mkdir -p $(dir $@)
-        $(NVCC) $(NVCCFLAGS) -c $< -o $@
-
+# Ejecutar la simulación directamente
 run: all
-	./$(BIN) --backend cpu
+	./$(TARGET)
 
+# Limpiar archivos de compilación y binarios
 clean:
-	rm -rf $(BUILD_DIR) bin
+	rm -rf $(BUILD_DIR) $(BIN_DIR)
 
+# Utilidad para comprobar qué está detectando el Makefile
 info:
-	@echo "CUDA detectado: $(if $(HAS_CUDA),si ($(HAS_CUDA)),no -- solo se compila el backend CPU)"
-	@echo "Fuentes C:  $(C_SOURCES)"
-	@echo "Fuentes CU: $(CU_SOURCES)"
+	@echo "========================================================="
+	@echo "                INFORMACIÓN DEL PROYECTO"
+	@echo "========================================================="
+	@echo "CUDA detectado:    $(if $(HAS_CUDA),SÍ (Compilando CPU + GPU),NO (Solo CPU))"
+	@echo "Fuentes C++ (.cc): $(CXX_SOURCES)"
+	@echo "Fuentes CUDA (.cu):$(CU_SOURCES)"
+	@echo "Objetos a crear:   $(OBJECTS)"
+	@echo "Destino binario:   $(TARGET)"
+	@echo "========================================================="
