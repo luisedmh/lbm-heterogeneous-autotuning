@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <filesystem>
 #include <cstdlib>
+#include <omp.h> // <--- Usamos la librería de OpenMP para el temporizador
 
 // Dimensiones del dominio
 const int NX = 400;
@@ -21,8 +22,8 @@ const double u_inflow = 0.1; // Velocidad de entrada del "viento"
 const int cx[9] = {0, 1, 0, -1, 0, 1, -1, -1, 1}; // Velocidades "horizontales" (eje X)
 const int cy[9] = {0, 0, 1, 0, -1, 1, 1, -1, -1}; // Velocidades "verticales" (eje Y)
 const double w[9] = {4.0/9.0, 1.0/9.0, 1.0/9.0, 1.0/9.0, 1.0/9.0, 
-                     1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0}; // Para compensar la diferencia entre moverse diagonalmente y perpendicularmente se usan los pesos
-const int noslip[9] = {0, 3, 4, 1, 2, 7, 8, 5, 6}; // Direcciones inversas para simular los rebotes
+                     1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0}; // Pesos geométricos
+const int noslip[9] = {0, 3, 4, 1, 2, 7, 8, 5, 6}; // Direcciones inversas para rebotes
 
 // --- NUESTRA ESTRUCTURA INTUITIVA ---
 struct Cell {
@@ -30,7 +31,7 @@ struct Cell {
 };
 
 // Función para calcular el equilibrio de una dirección específica
-inline double equilibrium(int i, double rho, double ux, double uy) { // $$f_i^{eq} = w_i \rho \left(1 + 3(\vec{c}_i \cdot \vec{u}) + 4.5(\vec{c}_i \cdot \vec{u})^2 - 1.5 u^2\right)$$
+inline double equilibrium(int i, double rho, double ux, double uy) { 
     double cu = cx[i] * ux + cy[i] * uy;
     double u2 = ux * ux + uy * uy;
     return w[i] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * u2);
@@ -108,6 +109,11 @@ int main() {
         }
     }
 
+    std::cout << "Iniciando simulación secuencial..." << std::endl;
+
+    // --- NUEVO: Capturar tiempo inicial con el reloj de OpenMP ---
+    double start_time = omp_get_wtime();
+
     // --- BUCLE PRINCIPAL DE SIMULACIÓN ---
     for (int step = 0; step <= NUM_STEPS; ++step) { // Para cada paso
         
@@ -144,7 +150,7 @@ int main() {
                     // PASO 4: Control de fronteras (Rebotes)
                     // Rebote en paredes superior/inferior
                     if (next_y < 0 || next_y >= NY) {
-                        next_grid[idx].f[noslip[i]] = f_post_collision; // Recordar noslip es la direccion contraria, rebote
+                        next_grid[idx].f[noslip[i]] = f_post_collision; // Rebote
                     }
                     // Rebote contra el cilindro
                     else if (obstacle[next_y * NX + next_x]) {
@@ -183,6 +189,13 @@ int main() {
         }
     }
 
+    // --- NUEVO: Capturar tiempo final con el reloj de OpenMP ---
+    double end_time = omp_get_wtime();
+
+    std::cout << "=========================================================" << std::endl;
     std::cout << "¡Simulación completada con éxito!" << std::endl;
+    std::cout << "Tiempo de cómputo secuencial: " << (end_time - start_time) << " segundos." << std::endl;
+    std::cout << "=========================================================" << std::endl;
+    
     return 0;
 }
