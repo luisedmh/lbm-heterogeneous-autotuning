@@ -112,8 +112,13 @@ CU_SOURCES  := $(if $(PHASE),$(call rwildcard,$(SRC_DIR)/$(PHASE)/,*.cu))
 CXX_OBJECTS := $(patsubst $(SRC_DIR)/%.cc,$(BUILD_DIR)/%.o,$(CXX_SOURCES))
 CU_OBJECTS  := $(patsubst $(SRC_DIR)/%.cu,$(BUILD_DIR)/%.o,$(CU_SOURCES))
 
-ifneq ($(and $(HAS_CUDA),$(CU_SOURCES)),)
-    # Si hay CUDA y la fase tiene fuentes .cu: activamos flag USE_CUDA y linkeamos el runtime
+# Detectar .cc que en realidad contienen código CUDA (kernels __global__, __constant__,
+# o que incluyen cuda_runtime.h). Estos archivos se compilarán con nvcc como si fueran .cu.
+CXX_CUDA_SOURCES := $(if $(CXX_SOURCES),$(shell grep -lE '__global__|__device__|__constant__|cuda_runtime\.h' $(CXX_SOURCES) 2>/dev/null))
+
+ifneq ($(and $(HAS_CUDA),$(or $(CU_SOURCES),$(CXX_CUDA_SOURCES))),)
+    # Si hay CUDA y la fase tiene fuentes .cu (o .cc con código CUDA): activamos flag
+    # USE_CUDA y linkeamos el runtime
     CXXFLAGS += -DUSE_CUDA
     OBJECTS  := $(CXX_OBJECTS) $(CU_OBJECTS)
     LDFLAGS  += -L/usr/local/cuda/lib64 -lcudart
@@ -165,9 +170,17 @@ $(TARGET): $(OBJECTS)
 	$(LINKER) $^ -o $@ $(LDFLAGS)
 
 # Compilar C++ (.cc) recreando la estructura de carpetas en build/
+# Si el propio .cc contiene código CUDA (kernels __global__, cuda_runtime.h, etc.),
+# se compila con nvcc forzando el lenguaje CUDA (-x cu) para que tenga acceso al
+# runtime y a la sintaxis de kernels; si no, se compila normalmente con g++.
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cc
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	@if [ -n "$(HAS_CUDA)" ] && grep -qE '__global__|__device__|__constant__|cuda_runtime\.h' $<; then \
+		echo "$(NVCC) -x cu ... -c $< -o $@ (detectado código CUDA en .cc)"; \
+		$(NVCC) -x cu $(NVCCFLAGS) -DUSE_CUDA -c $< -o $@; \
+	else \
+		$(CXX) $(CXXFLAGS) -c $< -o $@; \
+	fi
 
 # Compilar CUDA (.cu) recreando la estructura de carpetas en build/
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cu
