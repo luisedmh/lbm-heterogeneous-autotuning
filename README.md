@@ -14,22 +14,33 @@ de rendimiento en lugar de una configuración fija.
 
 | Fase | Contenido | Estado |
 |------|-----------|--------|
-| 1 | Solver LBM D2Q9 funcional en CPU (OpenMP) y GPU (CUDA), reparto fijo | En progreso |
-| 2 | Bucle de reajuste dinámico del reparto CPU/GPU en tiempo de ejecución | Pendiente |
-| 3 | Precisión adaptativa por zonas (FP16/FP32) | Exploratorio / trabajo futuro |
+| 1 | Solver LBM D2Q9 funcional en CPU Secuencial | Realizado |
+| 2 | Solver LBM D2Q9 funcional en CPU (OpenMP) | Realizado |
+| 3 | Solver LBM D2Q9 funcional en GPU (CUDA) | Realizado |
+| 4 | Solver LBM D2Q9 funcional en CPU (OpenMP) y GPU (CUDA), reparto fijo | Realizado |
+| 5 | Bucle de reajuste dinámico del reparto CPU/GPU en tiempo de ejecución | Pendiente |
+| 6 | Precisión adaptativa por zonas (FP16/FP32) | Exploratorio / trabajo futuro |
 
 ## Estructura del repositorio
  
 ```
 .
-├── include/lbm/       Cabeceras públicas (grid, solver)
-├── src/common/        Código compartido (gestión de la malla)
-├── src/cpu/           Implementación CPU (OpenMP)
-├── src/cuda/          Implementación GPU (CUDA), se compila solo si nvcc está disponible
-├── src/main.c         Punto de entrada y CLI
-├── scripts/           Utilidades en Python (procesar y graficar benchmarks)
-├── benchmarks/results/ Resultados de benchmarks (CSV, gráficas)
-└── docs/notes.md       Notas de estado del arte y referencias
+├── CLAUDCODE.md
+├── docs
+│   └── makefile_info.md
+├── Makefile
+├── README.md
+├── results
+│   ├── phase1
+│   ├── phase2
+│   └── phase3
+└── src
+    ├── Phase1_Sequential
+    │   └── main.cc
+    ├── Phase2_OpenMP
+    │   └── main.cc
+    └── Phase3_Cuda
+        └── main.cu
 ```
 
 ## Compilar y ejecutar
@@ -46,14 +57,4 @@ make clean      # limpia binarios y objetos
 ## Añadir código nuevo
 
 El `Makefile` recoge automáticamente **cualquier** archivo `.cc` o `.cu` que añadas bajo `src/`,
-en cualquier subcarpeta. No hace falta editar el `Makefile` para que se compile — solo
-asegúrate de que el `#include` de tu cabecera use la ruta desde `include/`.
-
-## Referencias de partida
-
-Ver [`docs/notes.md`](docs/notes.md) para el estado del arte y los términos de búsqueda
-usados para llegar a él.
-
-## Licencia
-
-MIT — ver [`LICENSE`](LICENSE).
+en cualquier subcarpeta. No hace falta editar el `Makefile` para que se compile`.
