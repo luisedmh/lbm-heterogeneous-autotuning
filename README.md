@@ -26,12 +26,11 @@ de rendimiento en lugar de una configuración fija.
 
 ## Estructura del repositorio
 
+```
 .
 ├── CLAUDCODE.md
 ├── docs
-│   ├── makefile_info.md
-│   └── media
-│       └── gif_readme.gif
+│   └── makefile_info.md
 ├── Makefile
 ├── README.md
 ├── results
@@ -39,12 +38,13 @@ de rendimiento en lugar de una configuración fija.
 │   ├── phase2
 │   └── phase3
 └── src
-├── Phase1_Sequential
-│   └── main.cc
-├── Phase2_OpenMP
-│   └── main.cc
-└── Phase3_Cuda
-└── main.cu
+    ├── Phase1_Sequential
+    │   └── main.cc
+    ├── Phase2_OpenMP
+    │   └── main.cc
+    └── Phase3_Cuda
+        └── main.cu
+```
 
 ## Compilar y ejecutar
 
