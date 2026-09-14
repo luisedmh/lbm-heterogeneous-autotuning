@@ -27,26 +27,26 @@ __global__ void collision_kernel(double* f, const bool* obstacle, double tau_par
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (x >= NX || y >= NY) return;
-    int idx = y * NX + x;
+    int idx = y * NX + x;   // índice de la casilla actual
 
-    if (obstacle[idx]) return;
+    if (obstacle[idx]) return;  // si es un obstáculo, no hacer colisión
 
     double rho = 0.0, ux = 0.0, uy = 0.0;
-    for (int i = 0; i < 9; ++i) {
+    for (int i = 0; i < 9; ++i) {   // Para cada dirección de velocidad
         double fi = f[i * NX * NY + idx];
-        rho += fi;
-        ux  += fi * d_cx[i];
-        uy  += fi * d_cy[i];
+        rho += fi;  // densidad
+        ux  += fi * d_cx[i]; // velocidad en x
+        uy  += fi * d_cy[i]; // velocidad en y
     }
-    ux /= rho;
-    uy /= rho;
+    ux /= rho;  // velocidad promedio en x
+    uy /= rho;  // velocidad promedio en y
 
-    double u2 = ux * ux + uy * uy;
-    for (int i = 0; i < 9; ++i) {
-        double cu = d_cx[i] * ux + d_cy[i] * uy;
-        double feq = d_w[i] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * u2);
-        int f_idx = i * NX * NY + idx;
-        f[f_idx] = f[f_idx] - (f[f_idx] - feq) / tau_param;
+    double u2 = ux * ux + uy * uy;  // magnitud de la velocidad al cuadrado
+    for (int i = 0; i < 9; ++i) {   // Para cada dirección de velocidad
+        double cu = d_cx[i] * ux + d_cy[i] * uy;  // producto escalar de la dirección de velocidad y la velocidad promedio
+        double feq = d_w[i] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * u2);    // Equilibrio termodinámico
+        int f_idx = i * NX * NY + idx;  // índice del arreglo f
+        f[f_idx] = f[f_idx] - (f[f_idx] - feq) / tau_param; // actualización de la distribución de partículas
     }
 }
 
@@ -55,27 +55,27 @@ __global__ void streaming_kernel(const double* f, double* f_next, const bool* ob
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (x >= NX || y >= NY) return;
-    int idx = y * NX + x;
+    int idx = y * NX + x;   // índice de la casilla actual (Como es pull sería la next)
 
-    if (x == 0) {
+    if (x == 0) {   // condición de frontera de entrada
         double u2 = u_inflow_param * u_inflow_param;
-        for (int i = 0; i < 9; ++i) {
-            double cu = d_cx[i] * u_inflow_param;
+        for (int i = 0; i < 9; ++i) {   // Para cada dirección de velocidad
+            double cu = d_cx[i] * u_inflow_param;   // Solo los q van hacia la derecha dan 0.1
             f_next[i * NX * NY + idx] = d_w[i] * 1.0 * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * u2);
         }
         return;
     }
 
-    if (x == NX - 1) {
+    if (x == NX - 1) { // condición de frontera de salida
         int virtual_x = NX - 2;
         int v_idx = y * NX + virtual_x;
-        for (int i = 0; i < 9; ++i) {
+        for (int i = 0; i < 9; ++i) {   // Para cada dirección de velocidad
             int prev_x = virtual_x - d_cx[i];
             int prev_y = y - d_cy[i];
             if (prev_y < 0 || prev_y >= NY || obstacle[prev_y * NX + prev_x]) {
-                f_next[i * NX * NY + idx] = f[d_noslip[i] * NX * NY + v_idx];
+                f_next[i * NX * NY + idx] = f[d_noslip[i] * NX * NY + v_idx];   // Rebote con paredes superiores, inferiores y obstáculos
             } else {
-                f_next[i * NX * NY + idx] = f[i * NX * NY + (prev_y * NX + prev_x)];
+                f_next[i * NX * NY + idx] = f[i * NX * NY + (prev_y * NX + prev_x)];    // Flujo normal
             }
         }
         return;
@@ -83,15 +83,15 @@ __global__ void streaming_kernel(const double* f, double* f_next, const bool* ob
 
     if (obstacle[idx]) return;
 
-    for (int i = 0; i < 9; ++i) {
-        int prev_x = x - d_cx[i];
-        int prev_y = y - d_cy[i];
-        int prev_idx = prev_y * NX + prev_x;
+    for (int i = 0; i < 9; ++i) {   // Para cada dirección de velocidad
+        int prev_x = x - d_cx[i];   // posición anterior en x
+        int prev_y = y - d_cy[i];   // posición anterior en y
+        int prev_idx = prev_y * NX + prev_x;    // índice de la casilla anterior
 
         if (prev_y < 0 || prev_y >= NY || obstacle[prev_idx]) {
-            f_next[i * NX * NY + idx] = f[d_noslip[i] * NX * NY + idx];
+            f_next[i * NX * NY + idx] = f[d_noslip[i] * NX * NY + idx]; // Rebote con paredes superiores, inferiores y obstáculos
         } else {
-            f_next[i * NX * NY + idx] = f[i * NX * NY + prev_idx];
+            f_next[i * NX * NY + idx] = f[i * NX * NY + prev_idx];  // Flujo normal, para esa direccion se coge los de la casilla q venian en esa direccion anteriormente
         }
     }
 }
@@ -100,6 +100,7 @@ int main() {
     std::vector<double> h_f(9 * NX * NY);
     std::vector<char> h_obs(NX * NY, 0);
 
+    // Definición del obstáculo
     int cx_cyl = NX / 4, cy_cyl = NY / 2, r_cyl = NY / 10;
     for (int y = 0; y < NY; ++y) {
         for (int x = 0; x < NX; ++x) {
@@ -109,6 +110,7 @@ int main() {
         }
     }
 
+    // Inicialización de la distribución de partículas
     for (int y = 0; y < NY; ++y) {
         for (int x = 0; x < NX; ++x) {
             int idx = y * NX + x;
