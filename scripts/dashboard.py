@@ -26,8 +26,6 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bench_data as bd  # noqa: E402
 
-st.set_page_config(page_title="LBM CPU+GPU | Benchmarks", page_icon=":bar_chart:", layout="wide")
-
 # ----------------------------------------------------------------------------------------
 # Tema y paleta (categorica en orden fijo; el color sigue a la entidad, no a su posicion)
 # ----------------------------------------------------------------------------------------
@@ -59,7 +57,7 @@ st.markdown(
 DASH_BY_PREC = {"FP64": "solid", "FP32": "dash"}
 
 
-def style(fig, title=None, height=420, xtitle=None, ytitle=None, legend=True):
+def style(fig, title=None, height=420, xtitle=None, ytitle=None, legend=True, xrange=None):
     """Estilo comun. El titulo se pinta con markdown encima del grafico (show) para que no choque con la leyenda."""
     fig.update_layout(
         meta=title, height=height, margin=dict(l=10, r=10, t=36 if legend else 12, b=10),
@@ -67,10 +65,12 @@ def style(fig, title=None, height=420, xtitle=None, ytitle=None, legend=True):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0, font=dict(color=INK2)) if legend else None,
         showlegend=legend, hovermode="x unified", hoverlabel=dict(font_size=12),
     )
+    # Ejes SIN zoom: la X abarca todo el dominio posible (0..1 o 0..filas) y la Y arranca en 0, para que una
+    # variacion pequena no parezca enorme y todos los graficos se lean con la misma escala.
     fig.update_xaxes(title=dict(text=xtitle, standoff=10), gridcolor=GRID, zeroline=False, linecolor=GRID,
-                     ticks="outside", tickcolor=GRID, automargin=True)
+                     ticks="outside", tickcolor=GRID, automargin=True, range=xrange)
     fig.update_yaxes(title=dict(text=ytitle, standoff=10), gridcolor=GRID, zeroline=False, linecolor=GRID,
-                     automargin=True)
+                     automargin=True, rangemode="tozero")
     return fig
 
 
@@ -82,6 +82,10 @@ def show(fig):
 
 def fmt(v, nd=1):
     return "-" if v is None or (isinstance(v, float) and np.isnan(v)) else f"{v:,.{nd}f}"
+
+
+def rng_txt(series):
+    return f"{series.min():.0f} – {series.max():.0f}"
 
 
 # ----------------------------------------------------------------------------------------
@@ -131,12 +135,19 @@ grids = list(ALL.drop_duplicates("grid").sort_values(["NX", "NY"])["grid"])
 sel_grid = st.sidebar.multiselect("Tamaño de malla (columnas x filas)", grids, default=grids)
 obsts = sorted(ALL["obstacle"].unique())
 sel_obs = st.sidebar.multiselect("Obstáculo", obsts, default=obsts)
+steps_all = sorted(ALL["steps"].dropna().astype(int).unique())
+steps_default = [x for x in steps_all if x >= 1000] or steps_all      # las pruebas cortas no cuentan por defecto
+sel_steps = st.sidebar.multiselect("Pasos por ejecución", steps_all, default=steps_default,
+                                   help="Menos de 1000 pasos es una prueba rápida y la medida es poco fiable, por eso "
+                                        "se ocultan por defecto. Añádelas aquí si quieres verlas.")
+if set(steps_default) != set(steps_all):
+    st.sidebar.caption("Las pruebas de menos de 1000 pasos están ocultas (se pueden añadir en este filtro).")
 gpus = sorted(ALL["gpu_name"].unique())
 sel_gpu = st.sidebar.multiselect("GPU", gpus, default=gpus) if len(gpus) > 1 else gpus
 
 DF = ALL[(ALL["date"] >= d_from.isoformat()) & (ALL["date"] <= d_to.isoformat())
-         & ALL["precision"].isin(sel_prec) & ALL["grid"].isin(sel_grid)
-         & ALL["obstacle"].isin(sel_obs) & ALL["gpu_name"].isin(sel_gpu)].copy()
+         & ALL["precision"].isin(sel_prec) & ALL["grid"].isin(sel_grid) & ALL["obstacle"].isin(sel_obs)
+         & ALL["steps"].astype("Int64").isin(sel_steps) & ALL["gpu_name"].isin(sel_gpu)].copy()
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"{len(DF):,} de {len(ALL):,} ejecuciones seleccionadas")
@@ -145,12 +156,28 @@ if DF.empty:
     st.warning("Ninguna medida cumple los filtros elegidos. Amplía la selección en la barra lateral.")
     st.stop()
 
+# Barrido a inspeccionar (pestanas "Barrido en detalle" y "Calidad"): por defecto el MAS COMPLETO
+sweeps = (DF.groupby("sweep_id").agg(datetime=("datetime", "min"), n=("order", "size"), splits=("ny_gpu", "nunique"))
+          .sort_values(["splits", "n", "datetime"], ascending=False))
+st.sidebar.markdown("### Barrido a inspeccionar")
+sweep = st.sidebar.selectbox("Barrido", list(sweeps.index), label_visibility="collapsed",
+                             format_func=lambda s: f"{s}  ({sweeps.loc[s, 'splits']} repartos, {sweeps.loc[s, 'n']} ejec.)")
+st.sidebar.caption("Se usa en «Barrido en detalle» y «Calidad de la medida». Los más completos salen primero.")
+
 st.caption(f"{len(DF):,} ejecuciones · {DF['sweep_id'].nunique()} barridos · {DF['config'].nunique()} configuraciones · "
            f"{DF['date'].nunique()} día(s) ({DF['date'].min()} → {DF['date'].max()}) · "
            f"GPU: {', '.join(sorted(DF['gpu_name'].unique()))}")
 
 tab_gen, tab_cmp, tab_det, tab_rep, tab_data = st.tabs(
-    ["Resumen general", "Comparar", "Barrido en detalle", "Repetibilidad y temperatura", "Datos"])
+    ["Resumen general", "Comparar", "Barrido en detalle", "Calidad de la medida", "Datos"])
+
+
+def pooled(d, keys):
+    """Media por `keys` + nº de configuraciones distintas que entran en cada punto."""
+    s = bd.summarize(d, keys)
+    k = d.groupby(list(keys))["config"].nunique().rename("n_cfg").reset_index()
+    return s.merge(k, on=list(keys))
+
 
 # ========================================================================================
 # 1) RESUMEN GENERAL: todo junto, separado por precision
@@ -158,75 +185,104 @@ tab_gen, tab_cmp, tab_det, tab_rep, tab_data = st.tabs(
 with tab_gen:
     st.subheader("Todas las medidas, por precisión")
     prec_present = [p for p in precs if p in set(DF["precision"])]
+
+    mixed = [p for p in prec_present if DF[DF["precision"] == p]["config"].nunique() > 1]
+    if mixed:
+        st.info("En " + " y ".join(mixed) + " hay varias configuraciones (mallas u obstáculos distintos). Las curvas "
+                "gruesas son la **media de todas**; las finas, cada configuración. Para ver una sola, "
+                "filtra en la barra lateral.")
+    if DF["steps"].nunique() > 1:
+        st.warning("Hay medidas con distinto número de pasos (" + ", ".join(str(int(x)) for x in sorted(DF['steps'].unique()))
+                   + "). Las de pocos pasos son menos fiables: filtra por «Pasos por ejecución» si no quieres mezclarlas.")
+
     cols = st.columns(len(prec_present))
     for col, p in zip(cols, prec_present):
         d = DF[DF["precision"] == p]
         by_cfg = bd.summarize(d, ["config", "ny_gpu"])
         best = by_cfg.loc[by_cfg["total_mlups"].idxmax()]
+        by_split = bd.summarize(d, ["alpha"])
         with col.container(border=True):
             st.markdown(f"**{p}**")
             st.caption(f"{len(d):,} ejecuciones · {d['sweep_id'].nunique()} barridos · {d['grid'].nunique()} tamaño(s) · "
                        f"{d['obstacle'].nunique()} obstáculo(s)")
             m1, m2, m3 = st.columns(3)
-            m1.metric("MLUPS GPU (media)", fmt(d["gpu_side_mlups"].mean()))
-            m2.metric("MLUPS CPU (media)", fmt(d["cpu_side_mlups"].mean()))
+            m1.metric("MLUPS GPU (rango)", rng_txt(by_split["gpu_mlups"]), help="Mínimo y máximo de la media por reparto")
+            m2.metric("MLUPS CPU (rango)", rng_txt(by_split["cpu_mlups"]), help="Mínimo y máximo de la media por reparto")
             m3.metric("Mejor MLUPS total", fmt(best["total_mlups"]))
             st.caption(f"Mejor: {best['config']} con {int(best['ny_gpu'])} filas en la GPU")
 
-    gen = bd.summarize(DF, ["precision", "alpha"])
-
     fig = go.Figure()
     for p in prec_present:
-        g = gen[gen["precision"] == p].sort_values("alpha")
+        d = DF[DF["precision"] == p]
         dash = DASH_BY_PREC.get(p, "solid")
-        fig.add_trace(go.Scatter(x=g["alpha"], y=g["gpu_mlups"], mode="lines+markers", name=f"GPU · {p}",
-                                 line=dict(color=C_GPU, width=2, dash=dash), marker=dict(size=7, line=dict(width=2, color="rgba(0,0,0,0)"))))
-        fig.add_trace(go.Scatter(x=g["alpha"], y=g["cpu_mlups"], mode="lines+markers", name=f"CPU · {p}",
-                                 line=dict(color=C_CPU, width=2, dash=dash), marker=dict(size=7)))
+        if d["config"].nunique() > 1:                       # curvas finas: cada configuracion
+            for cfg_name, dc in d.groupby("config"):
+                sc = bd.summarize(dc, ["alpha"]).sort_values("alpha")
+                for ycol, color in (("gpu_mlups", C_GPU), ("cpu_mlups", C_CPU)):
+                    fig.add_trace(go.Scatter(x=sc["alpha"], y=sc[ycol], mode="lines", showlegend=False, hoverinfo="skip",
+                                             line=dict(color=color, width=1.5, dash=dash), opacity=0.45))
+        g = pooled(d, ["alpha"]).sort_values("alpha")
+        for ycol, name, color in (("gpu_mlups", "GPU", C_GPU), ("cpu_mlups", "CPU", C_CPU)):
+            fig.add_trace(go.Scatter(x=g["alpha"], y=g[ycol], mode="lines+markers", name=f"{name} · {p}",
+                                     customdata=np.stack([g["n"], g["n_cfg"]], axis=-1),
+                                     hovertemplate="%{y:,.1f}  (media de %{customdata[0]} ejec., %{customdata[1]} config.)<extra>" + f"{name} · {p}" + "</extra>",
+                                     line=dict(color=color, width=2.5, dash=dash), marker=dict(size=7)))
     style(fig, "MLUPS de cada dispositivo según el reparto", 430,
           "fracción de filas asignadas a la GPU (α = filas GPU / filas totales)", "MLUPS de cada lado")
     show(fig)
 
-    c1, c2 = st.columns(2)
     fig = go.Figure()
     for p in prec_present:
-        g = gen[gen["precision"] == p].sort_values("alpha")
-        fig.add_trace(go.Scatter(x=g["alpha"], y=g["total_mlups"], mode="lines+markers", name=p,
-                                 line=dict(color=C_TOT, width=2, dash=DASH_BY_PREC.get(p, "solid")), marker=dict(size=7)))
-    style(fig, "MLUPS total del programa heterogéneo", 360, "α (fracción de filas GPU)", "MLUPS total")
-    with c1:
-        show(fig)
-    fig = go.Figure()
-    for p in prec_present:
-        g = gen[gen["precision"] == p].sort_values("alpha")
+        d = DF[DF["precision"] == p]
         dash = DASH_BY_PREC.get(p, "solid")
-        fig.add_trace(go.Scatter(x=g["alpha"], y=g["t_gpu_ms"], mode="lines", name=f"GPU · {p}",
-                                 line=dict(color=C_GPU, width=2, dash=dash)))
-        fig.add_trace(go.Scatter(x=g["alpha"], y=g["t_cpu_ms"], mode="lines", name=f"CPU · {p}",
-                                 line=dict(color=C_CPU, width=2, dash=dash)))
-    style(fig, "Tiempo por paso de cada lado", 360, "α (fracción de filas GPU)", "ms por paso")
-    with c2:
-        show(fig)
-    st.caption("Cada punto es la media de todas las ejecuciones de la precisión con ese reparto. Si en el filtro hay "
-               "mallas u obstáculos distintos, la media los mezcla: usa los filtros de la izquierda o la pestaña "
-               "«Comparar» para verlos por separado.")
+        if d["config"].nunique() > 1:
+            for cfg_name, dc in d.groupby("config"):
+                sc = bd.summarize(dc, ["alpha"]).sort_values("alpha")
+                fig.add_trace(go.Scatter(x=sc["alpha"], y=sc["total_mlups"], mode="lines", showlegend=False, hoverinfo="skip",
+                                         line=dict(color=C_TOT, width=1.5, dash=dash), opacity=0.45))
+        g = pooled(d, ["alpha"]).sort_values("alpha")
+        fig.add_trace(go.Scatter(x=g["alpha"], y=g["total_mlups"], mode="lines+markers", name=p,
+                                 customdata=np.stack([g["n"], g["n_cfg"]], axis=-1),
+                                 hovertemplate="%{y:,.1f}  (media de %{customdata[0]} ejec., %{customdata[1]} config.)<extra>" + p + "</extra>",
+                                 line=dict(color=C_TOT, width=2.5, dash=dash), marker=dict(size=7)))
+    style(fig, "MLUPS total del programa heterogéneo (CPU + GPU)", 380, "α (fracción de filas GPU)", "MLUPS total")
+    show(fig)
 
-    st.subheader("Resumen por precisión y configuración")
+    fig = go.Figure()
+    for p in prec_present:
+        d = DF[DF["precision"] == p]
+        dash = DASH_BY_PREC.get(p, "solid")
+        if d["config"].nunique() > 1:
+            for cfg_name, dc in d.groupby("config"):
+                sc = bd.summarize(dc, ["alpha"]).sort_values("alpha")
+                for ycol, color in (("t_gpu_ms", C_GPU), ("t_cpu_ms", C_CPU)):
+                    fig.add_trace(go.Scatter(x=sc["alpha"], y=sc[ycol], mode="lines", showlegend=False, hoverinfo="skip",
+                                             line=dict(color=color, width=1.5, dash=dash), opacity=0.45))
+        g = pooled(d, ["alpha"]).sort_values("alpha")
+        for ycol, name, color in (("t_gpu_ms", "GPU", C_GPU), ("t_cpu_ms", "CPU", C_CPU)):
+            fig.add_trace(go.Scatter(x=g["alpha"], y=g[ycol], mode="lines+markers", name=f"{name} · {p}",
+                                     customdata=np.stack([g["n"], g["n_cfg"]], axis=-1),
+                                     hovertemplate="%{y:,.3f} ms  (media de %{customdata[0]} ejec., %{customdata[1]} config.)<extra>" + f"{name} · {p}" + "</extra>",
+                                     line=dict(color=color, width=2.5, dash=dash), marker=dict(size=7)))
+    style(fig, "Tiempo por paso de cada lado (t GPU y t CPU)", 400, "α (fracción de filas GPU)", "ms por paso")
+    show(fig)
+    st.caption("El paso completo dura lo que tarde el lado más lento: donde se cruzan las dos curvas, GPU y CPU tardan lo "
+               "mismo y ninguna espera a la otra.")
+
+    st.subheader("Resumen por configuración")
     cfg = bd.summarize(DF, ["precision", "grid", "obstacle", "ny_gpu"])
     rows = []
     for (p, gr, ob), g in cfg.groupby(["precision", "grid", "obstacle"]):
         b = g.loc[g["total_mlups"].idxmax()]
         rows.append({"Precisión": p, "Malla": gr, "Obstáculo": ob,
                      "Ejecuciones": int(g["n"].sum()), "Repartos": len(g),
-                     "MLUPS GPU (media)": g["gpu_mlups"].mean(), "MLUPS CPU (media)": g["cpu_mlups"].mean(),
+                     "MLUPS GPU": rng_txt(g["gpu_mlups"]), "MLUPS CPU": rng_txt(g["cpu_mlups"]),
                      "Mejor MLUPS total": b["total_mlups"], "Con filas GPU": int(b["ny_gpu"]),
                      "α del mejor": b["ny_gpu"] / int(gr.split("x")[1])})
-    tb = pd.DataFrame(rows)
-    st.dataframe(tb, hide_index=True, width="stretch", column_config={
-        "MLUPS GPU (media)": st.column_config.NumberColumn(format="%.1f"),
-        "MLUPS CPU (media)": st.column_config.NumberColumn(format="%.1f"),
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", column_config={
         "Mejor MLUPS total": st.column_config.NumberColumn(format="%.1f"),
         "α del mejor": st.column_config.NumberColumn(format="%.3f")})
+    st.caption("MLUPS GPU / CPU: mínimo – máximo de la media por reparto, medidos dentro del programa heterogéneo.")
 
 # ========================================================================================
 # 2) COMPARAR: agrupar por cualquier variable
@@ -235,7 +291,7 @@ GROUPS = {"Configuración completa": "config", "Precisión": "precision", "Tama�
           "Obstáculo": "obstacle", "Fecha": "date", "Barrido": "sweep_id", "GPU": "gpu_name"}
 METRICS = {"MLUPS de la GPU": ("gpu_mlups", "MLUPS"), "MLUPS de la CPU": ("cpu_mlups", "MLUPS"),
            "MLUPS total": ("total_mlups", "MLUPS"), "Tiempo GPU por paso": ("t_gpu_ms", "ms"),
-           "Tiempo CPU por paso": ("t_cpu_ms", "ms"), "Tiempo del paso completo": ("t_step_ms", "ms")}
+           "Tiempo CPU por paso": ("t_cpu_ms", "ms")}
 XAXES = {"Fracción de filas GPU (α)": ("alpha", "α = filas GPU / filas totales"),
          "Filas asignadas a la GPU": ("ny_gpu", "filas GPU")}
 
@@ -265,57 +321,45 @@ with tab_cmp:
     for v in sorted(shown, key=str):
         g = cmp_df[cmp_df[gcol] == v].sort_values(xcol)
         fig.add_trace(go.Scatter(x=g[xcol], y=g[mcol], mode="lines+markers", name=str(v),
-                                 line=dict(color=color_of[str(v)], width=2), marker=dict(size=7)))
-    style(fig, f"{m_label} según el reparto, por {g_label.lower()}", 470, xtitle, munit)
+                                 line=dict(color=color_of[str(v)], width=2.5), marker=dict(size=7)))
+    xr = [0, 1] if xcol == "alpha" else [0, int(DS["NY"].max())]
+    style(fig, f"{m_label} según el reparto, por {g_label.lower()}", 470, xtitle, munit, xrange=xr)
     show(fig)
-    st.caption("Cada línea es la media de las ejecuciones de ese grupo en cada reparto. Si no agrupas por una variable "
-               "que está mezclada en los datos (p. ej. agrupas por precisión con dos obstáculos), cada punto promedia "
-               "esos casos: filtra a la izquierda para aislarla.")
 
-    st.subheader(f"Mejor rendimiento total por {g_label.lower()}")
-    best_rows = []
+    rows = []
     for v in sorted(shown, key=str):
-        s = bd.summarize(DS[DS[gcol] == v], ["ny_gpu"])
-        b = s.loc[s["total_mlups"].idxmax()]
         sub = DS[DS[gcol] == v]
-        best_rows.append({g_label: str(v), "Ejecuciones": len(sub), "MLUPS GPU (media)": sub["gpu_side_mlups"].mean(),
-                          "MLUPS CPU (media)": sub["cpu_side_mlups"].mean(), "Mejor MLUPS total": b["total_mlups"],
-                          "Con filas GPU": int(b["ny_gpu"]), "NY": int(sub["NY"].median()),
-                          "α del mejor": b["ny_gpu"] / float(sub["NY"].median())})
-    bt = pd.DataFrame(best_rows)
-    bar = go.Figure()
-    bar.add_trace(go.Bar(y=bt[g_label], x=bt["Mejor MLUPS total"], orientation="h",
-                         marker=dict(color=[color_of[v] for v in bt[g_label]], cornerradius=4),
-                         text=[f"{x:,.0f}" for x in bt["Mejor MLUPS total"]], textposition="outside",
-                         textfont=dict(color=INK), hovertemplate="%{y}: %{x:,.1f} MLUPS<extra></extra>"))
-    style(bar, None, max(220, 52 * len(bt) + 60), "MLUPS total (mejor reparto de cada grupo)", None, legend=False)
-    bar.update_yaxes(autorange="reversed", gridcolor="rgba(0,0,0,0)")
-    bar.update_layout(hovermode="closest", bargap=0.35)
-    show(bar)
-    st.dataframe(bt.drop(columns=["NY"]), hide_index=True, width="stretch", column_config={
-        "MLUPS GPU (media)": st.column_config.NumberColumn(format="%.1f"),
-        "MLUPS CPU (media)": st.column_config.NumberColumn(format="%.1f"),
+        s = bd.summarize(sub, ["ny_gpu"])
+        b = s.loc[s["total_mlups"].idxmax()]
+        rows.append({g_label: str(v), "Ejecuciones": len(sub), "Repartos": len(s),
+                     "MLUPS GPU": rng_txt(s["gpu_mlups"]), "MLUPS CPU": rng_txt(s["cpu_mlups"]),
+                     "Mejor MLUPS total": b["total_mlups"], "α del mejor": b["ny_gpu"] / float(sub["NY"].median())})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", column_config={
         "Mejor MLUPS total": st.column_config.NumberColumn(format="%.1f"),
         "α del mejor": st.column_config.NumberColumn(format="%.3f")})
+    st.caption("Cada línea es la media de las ejecuciones de ese grupo en cada reparto. Si hay otra variable mezclada "
+               "dentro del grupo (p. ej. agrupas por precisión con dos obstáculos), cada punto promedia esos casos.")
 
 # ========================================================================================
-# 3) BARRIDO EN DETALLE (un CSV)
+# 3) BARRIDO EN DETALLE (el elegido en la barra lateral)
 # ========================================================================================
-sweeps = (DF.groupby("sweep_id").agg(datetime=("datetime", "min"), n=("order", "size"), config=("config", "first"))
-          .sort_values("datetime", ascending=False))
+S = DF[DF["sweep_id"] == sweep].copy()
+SS = bd.summarize(S, ["ny_gpu"]).sort_values("ny_gpu")
+r0 = S.iloc[0]
+NYS = int(r0["NY"])
+
 with tab_det:
     st.subheader("Un barrido en detalle")
-    sweep = st.selectbox("Barrido", list(sweeps.index),
-                         format_func=lambda s: f"{s}   ({sweeps.loc[s, 'n']} ejecuciones)")
-    S = DF[DF["sweep_id"] == sweep].copy()
-    SS = bd.summarize(S, ["ny_gpu"]).sort_values("ny_gpu")
-    r0 = S.iloc[0]
+    st.caption(f"{sweep}")
     st.caption(f"{r0['precision']} · malla {r0['grid']} (columnas x filas) · obstáculo {r0['obstacle']} · {r0['date']} · "
                f"{r0['steps']:.0f} pasos ({r0['warmup']:.0f} de calentamiento) · {r0['omp_threads']:.0f} hilos de CPU")
+    if len(SS) < 4:
+        st.warning(f"Este barrido solo tiene {len(SS)} reparto(s) ({', '.join(str(int(x)) for x in SS['ny_gpu'])} filas "
+                   "GPU): es una prueba corta. Elige otro barrido en la barra lateral para ver la curva completa.")
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("MLUPS GPU", f"{SS['gpu_mlups'].min():.0f} – {SS['gpu_mlups'].max():.0f}", border=True)
-    k2.metric("MLUPS CPU", f"{SS['cpu_mlups'].min():.0f} – {SS['cpu_mlups'].max():.0f}", border=True)
+    k1.metric("MLUPS GPU (rango)", rng_txt(SS["gpu_mlups"]), border=True)
+    k2.metric("MLUPS CPU (rango)", rng_txt(SS["cpu_mlups"]), border=True)
     bs = SS.loc[SS["total_mlups"].idxmax()]
     k3.metric("Mejor MLUPS total", fmt(bs["total_mlups"]), f"{int(bs['ny_gpu'])} filas GPU", delta_color="off",
               delta_arrow="off", border=True)
@@ -327,30 +371,24 @@ with tab_det:
     fig.add_trace(go.Scatter(x=S["ny_gpu"], y=S["cpu_side_mlups"], mode="markers", showlegend=False, hoverinfo="skip",
                              marker=dict(color=C_CPU, opacity=0.25, size=6)))
     fig.add_trace(go.Scatter(x=SS["ny_gpu"], y=SS["gpu_mlups"], mode="lines+markers", name="GPU (media)",
-                             line=dict(color=C_GPU, width=2), marker=dict(size=8)))
+                             line=dict(color=C_GPU, width=2.5), marker=dict(size=8)))
     fig.add_trace(go.Scatter(x=SS["ny_gpu"], y=SS["cpu_mlups"], mode="lines+markers", name="CPU (media)",
-                             line=dict(color=C_CPU, width=2), marker=dict(size=8)))
-    style(fig, "MLUPS de la GPU y de la CPU", 430, "filas asignadas a la GPU (la CPU hace el resto)", "MLUPS de cada lado")
+                             line=dict(color=C_CPU, width=2.5), marker=dict(size=8)))
+    style(fig, "MLUPS de la GPU y de la CPU", 400, "filas asignadas a la GPU (la CPU hace el resto)", "MLUPS de cada lado",
+          xrange=[0, NYS])
     show(fig)
     st.caption("MLUPS de un lado = celdas de ese lado / tiempo que ese lado tarda en un paso (GPU: cudaEvent, incluye la "
                "copia del halo; CPU: reloj alrededor de su cálculo). Puntos claros = cada ejecución; línea = media.")
 
-    c1, c2 = st.columns(2)
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=SS["ny_gpu"], y=SS["t_gpu_ms"], mode="lines+markers", name="GPU", line=dict(color=C_GPU, width=2)))
-    fig.add_trace(go.Scatter(x=SS["ny_gpu"], y=SS["t_cpu_ms"], mode="lines+markers", name="CPU", line=dict(color=C_CPU, width=2)))
-    style(fig, "Tiempo por paso de cada lado", 360, "filas GPU", "ms por paso")
-    with c1:
-        show(fig)
     fig = go.Figure(go.Scatter(x=SS["ny_gpu"], y=SS["total_mlups"], mode="lines+markers", name="MLUPS total",
                                error_y=dict(type="data", array=SS["total_std"].fillna(0), visible=True, color=INK2),
-                               line=dict(color=C_TOT, width=2), marker=dict(size=7)))
-    style(fig, "MLUPS total del programa heterogéneo", 360, "filas GPU", "MLUPS", legend=False)
-    with c2:
-        show(fig)
+                               line=dict(color=C_TOT, width=2.5), marker=dict(size=7)))
+    style(fig, "MLUPS total del programa heterogéneo", 340, "filas asignadas a la GPU", "MLUPS", legend=False,
+          xrange=[0, NYS])
+    show(fig)
 
     tb = SS[["ny_gpu", "n", "gpu_mlups", "cpu_mlups", "total_mlups", "total_cv_pct", "t_gpu_ms", "t_cpu_ms", "t_step_ms"]].copy()
-    tb.insert(1, "ny_cpu", int(r0["NY"]) - tb["ny_gpu"])
+    tb.insert(1, "ny_cpu", NYS - tb["ny_gpu"])
     tb = tb.rename(columns={"ny_gpu": "filas GPU", "ny_cpu": "filas CPU", "n": "reps", "gpu_mlups": "MLUPS GPU",
                             "cpu_mlups": "MLUPS CPU", "total_mlups": "MLUPS total", "total_cv_pct": "CV %",
                             "t_gpu_ms": "t GPU (ms)", "t_cpu_ms": "t CPU (ms)", "t_step_ms": "t paso (ms)"})
@@ -359,48 +397,33 @@ with tab_det:
                                 if c not in ("filas GPU", "filas CPU", "reps")})
 
 # ========================================================================================
-# 4) REPETIBILIDAD Y TEMPERATURA (del barrido elegido)
+# 4) CALIDAD DE LA MEDIDA (del barrido elegido)
 # ========================================================================================
 with tab_rep:
-    st.subheader("Repetibilidad y temperatura")
-    st.caption(f"Barrido: {sweep}")
-    c1, c2 = st.columns(2)
-    for col, key, title, color in ((c1, "gpu_side_mlups", "MLUPS de la GPU por reparto", C_GPU),
-                                   (c2, "cpu_side_mlups", "MLUPS de la CPU por reparto", C_CPU)):
-        fb = go.Figure()
-        for ny in sorted(S["ny_gpu"].unique()):
-            fb.add_trace(go.Box(y=S[S["ny_gpu"] == ny][key], name=str(int(ny)), boxpoints="all", jitter=0.4, pointpos=0,
-                                marker=dict(size=4, color=color), line=dict(color=color, width=1.5),
-                                fillcolor="rgba(0,0,0,0)"))
-        style(fb, title, 380, "filas GPU", "MLUPS", legend=False)
-        fb.update_layout(hovermode="closest")
-        with col:
-            show(fb)
-    st.caption("El orden de las ejecuciones está barajado a propósito: si hay deriva térmica se ve aquí sin confundirse "
-               "con el efecto del reparto.")
-    c1, c2 = st.columns(2)
-    for col, key, title in ((c1, "gpu_side_mlups", "MLUPS GPU según el orden de ejecución"),
-                            (c2, "cpu_side_mlups", "MLUPS CPU según el orden de ejecución")):
-        fo = go.Figure(go.Scatter(x=S["order"], y=S[key], mode="markers",
-                                  marker=dict(color=S["ny_gpu"], colorscale="Viridis", showscale=True,
-                                              colorbar=dict(title="filas GPU", thickness=10), size=7)))
-        style(fo, title, 340, "nº de ejecución", "MLUPS", legend=False)
-        fo.update_layout(hovermode="closest")
-        with col:
-            show(fo)
+    st.subheader("Calidad de la medida")
+    st.caption(f"{sweep}")
+
+    cv = S.groupby("ny_gpu").agg(g_mean=("gpu_side_mlups", "mean"), g_std=("gpu_side_mlups", "std"),
+                                 c_mean=("cpu_side_mlups", "mean"), c_std=("cpu_side_mlups", "std")).reset_index()
+    cv["GPU"] = 100 * cv["g_std"] / cv["g_mean"]
+    cv["CPU"] = 100 * cv["c_std"] / cv["c_mean"]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=cv["ny_gpu"].astype(str), y=cv["GPU"], name="GPU", marker=dict(color=C_GPU, cornerradius=3)))
+    fig.add_trace(go.Bar(x=cv["ny_gpu"].astype(str), y=cv["CPU"], name="CPU", marker=dict(color=C_CPU, cornerradius=3)))
+    style(fig, "Variabilidad entre repeticiones (CV %) en cada reparto", 360, "filas asignadas a la GPU", "CV % (desv. / media)")
+    fig.update_layout(barmode="group", bargap=0.3, hovermode="closest")
+    fig.update_xaxes(type="category")
+    show(fig)
+    st.caption("CV % = desviación típica / media de las repeticiones. Por debajo de ~2 % la media es fiable; "
+               "valores altos indican que esa medida se repite mal.")
+
     if S["gpu_temp_max"].notna().any():
-        c1, c2 = st.columns(2)
-        ft = go.Figure(go.Scatter(x=S["order"], y=S["gpu_temp_max"], mode="lines+markers",
-                                  line=dict(color=C_CPU, width=2), marker=dict(size=5)))
-        style(ft, "Temperatura máxima de la GPU en cada ejecución", 320, "nº de ejecución", "°C", legend=False)
-        with c1:
-            show(ft)
-        if S["gpu_sm_clock_mean"].notna().any():
-            fc = go.Figure(go.Scatter(x=S["order"], y=S["gpu_sm_clock_mean"], mode="lines+markers",
-                                      line=dict(color=C_GPU, width=2), marker=dict(size=5)))
-            style(fc, "Reloj medio de la GPU", 320, "nº de ejecución", "MHz", legend=False)
-            with c2:
-                show(fc)
+        fig = go.Figure(go.Scatter(x=S["order"], y=S["gpu_temp_max"], mode="lines+markers", name="T máx. GPU",
+                                   line=dict(color=C_CPU, width=2), marker=dict(size=5)))
+        style(fig, "Temperatura máxima de la GPU en cada ejecución", 320, "nº de ejecución (el orden está barajado a propósito)",
+              "°C", legend=False)
+        show(fig)
+        st.caption("Si la temperatura sube mucho a lo largo del barrido, la GPU puede bajar su reloj y falsear las últimas medidas.")
     else:
         st.info("Este barrido no tiene datos de temperatura (nvidia-smi no estaba disponible al medir).")
 
@@ -410,7 +433,7 @@ with tab_rep:
 with tab_data:
     st.subheader("Barridos incluidos")
     inv = (DF.groupby("sweep_id").agg(Fecha=("date", "first"), Precisión=("precision", "first"), Malla=("grid", "first"),
-                                      Obstáculo=("obstacle", "first"), Ejecuciones=("order", "size"),
+                                      Obstáculo=("obstacle", "first"), Pasos=("steps", "first"), Ejecuciones=("order", "size"),
                                       Repartos=("ny_gpu", "nunique"), GPU=("gpu_name", "first"),
                                       Archivo=("source_file", "first"))
            .reset_index().sort_values("Fecha", ascending=False).rename(columns={"sweep_id": "Barrido"}))
