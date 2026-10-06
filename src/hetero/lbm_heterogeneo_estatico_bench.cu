@@ -4,8 +4,9 @@
 // Es lbm_heterogeneo_v2.cu (reparto FIJO, halo bidireccional) SIN tocar la
 // fisica ni el esquema numerico, con tres diferencias, todas de medida:
 //
-//   1) El reparto y la duracion se eligen por linea de comandos, sin
-//      recompilar:   --ny-gpu N   --steps N   --warmup N   --dump
+//   1) El reparto, la duracion y el obstaculo se eligen por linea de comandos,
+//      sin recompilar:   --ny-gpu N   --steps N   --warmup N   --obstacle T   --dump
+//      (el tamano de malla NX x NY se fija al compilar: -DNX_SIZE= -DNY_SIZE=)
 //   2) En cada paso se mide POR SEPARADO cuanto tarda el lado GPU
 //      (cudaEvent: copia del halo H2D + kernel + copia del halo D2H) y el
 //      lado CPU (cpu_fused_step, con reloj del host), ademas del paso entero.
@@ -63,13 +64,21 @@
 #include <string>
 #include <cuda_runtime.h>
 
-const int NX = 1000;
-const int NY = 1000;
+// Tamano de la malla: columnas (NX) x filas (NY). Es una CONSTANTE DE COMPILACION
+// (el kernel rinde mejor asi): scripts/benchmark.py compila un ejecutable por
+// tamano con  -DNX_SIZE=<columnas> -DNY_SIZE=<filas>.  Sin flags: 1000 x 1000.
+#ifndef NX_SIZE
+#define NX_SIZE 1000
+#endif
+#ifndef NY_SIZE
+#define NY_SIZE 1000
+#endif
+const int NX = NX_SIZE;
+const int NY = NY_SIZE;
 const int NUM_STEPS_DEFAULT = 3000;
 
-// Reparto FIJO de momento (90% GPU / 10% CPU). El valor exacto no afecta a
-// la validacion de correccion (hasta un 50/50 validaria igual de bien).
-const int NY_GPU_INIT = 900;
+// Reparto por defecto (90% GPU / 10% CPU); en la practica se elige con --ny-gpu.
+const int NY_GPU_INIT = NY * 9 / 10;
 
 #ifdef USE_SINGLE_PRECISION
     using real_t = float;
@@ -474,11 +483,13 @@ int main(int argc, char** argv) {
     int NUM_STEPS = NUM_STEPS_DEFAULT;
     int warmup_steps = 100;
     bool do_dump = false;
+    std::string obstacle_name = "cylinder";
     for (int a = 1; a < argc; ++a) {
         std::string arg = argv[a];
         if (arg == "--ny-gpu" && a + 1 < argc)      ny_gpu = std::atoi(argv[++a]);
         else if (arg == "--steps" && a + 1 < argc)  NUM_STEPS = std::atoi(argv[++a]);
         else if (arg == "--warmup" && a + 1 < argc) warmup_steps = std::atoi(argv[++a]);
+        else if (arg == "--obstacle" && a + 1 < argc) obstacle_name = argv[++a];
         else if (arg == "--dump")                   do_dump = true;
         else { std::cerr << "Argumento desconocido: " << arg << std::endl; return 2; }
     }
@@ -492,11 +503,29 @@ int main(int argc, char** argv) {
     std::vector<real_t> h_f(9 * NX * NY), h_f_next(9 * NX * NY);
     std::vector<char> h_obs(NX * NY, 0);
 
+    // Obstaculo (--obstacle): todos centrados en (NX/4, NY/2) y de tamano ~ NY/10.
+    //   cylinder : circulo de radio NY/10 (el caso de siempre, Karman)
+    //   square   : cuadrado de lado 2*(NY/10)
+    //   plate    : placa vertical de altura 2*(NY/10) y 4 celdas de grosor
+    //   none     : sin obstaculo (canal libre)
     int cx_cyl = NX / 4, cy_cyl = NY / 2, r_cyl = NY / 10;
+    if (obstacle_name != "cylinder" && obstacle_name != "square" && obstacle_name != "plate" && obstacle_name != "none") {
+        std::cerr << "--obstacle desconocido: " << obstacle_name << " (usa cylinder, square, plate o none)" << std::endl;
+        return 2;
+    }
     for (int y = 0; y < NY; ++y)
-        for (int x = 0; x < NX; ++x)
-            if ((x - cx_cyl)*(x - cx_cyl) + (y - cy_cyl)*(y - cy_cyl) < r_cyl * r_cyl)
-                h_obs[y * NX + x] = 1;
+        for (int x = 0; x < NX; ++x) {
+            bool solid = false;
+            if (obstacle_name == "cylinder")
+                solid = (x - cx_cyl)*(x - cx_cyl) + (y - cy_cyl)*(y - cy_cyl) < r_cyl * r_cyl;
+            else if (obstacle_name == "square")
+                solid = std::abs(x - cx_cyl) < r_cyl && std::abs(y - cy_cyl) < r_cyl;
+            else if (obstacle_name == "plate")
+                solid = std::abs(x - cx_cyl) < 2 && std::abs(y - cy_cyl) < r_cyl;
+            if (solid) h_obs[y * NX + x] = 1;
+        }
+    long long obstacle_cells = 0;
+    for (int i = 0; i < NX * NY; ++i) obstacle_cells += h_obs[i];
 
     for (int y = 0; y < NY; ++y)
         for (int x = 0; x < NX; ++x) {
@@ -539,7 +568,8 @@ int main(int argc, char** argv) {
 
     std::cout << "=========================================================" << std::endl;
     std::cout << ">>> LBM D2Q9 HETEROGENEO ESTATICO - BENCHMARK (reparto fijo, halo bidireccional)" << std::endl;
-    std::cout << "ny_gpu = " << ny_gpu << " / NY = " << NY << std::endl;
+    std::cout << "malla " << NX << "x" << NY << "  obstaculo = " << obstacle_name
+              << "  ny_gpu = " << ny_gpu << " / NY = " << NY << std::endl;
     std::cout << "=========================================================" << std::endl;
 
     // --- instrumentacion: eventos CUDA y vectores de tiempos por paso (ms) ---
@@ -639,6 +669,7 @@ int main(int argc, char** argv) {
         std::cout << "BENCH_RESULT"
                   << " precision=" << prec
                   << " NX=" << NX << " NY=" << NY
+                  << " obstacle=" << obstacle_name << " obstacle_cells=" << obstacle_cells
                   << " ny_gpu=" << ny_gpu << " ny_cpu=" << ny_cpu
                   << " steps=" << NUM_STEPS << " warmup=" << warmup_steps
                   << " n_samples=" << v_step.size()
