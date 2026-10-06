@@ -1,0 +1,22 @@
+1. FuidX3D
+./make.sh 0
+./bin/FluidX3D
+
+2. Solo GPU fusionando kernels
+make run N=lbm_gpu_fused.cu                  # FP64
+make run N=lbm_gpu_fused.cu PRECISION=fp32   # FP32
+
+2. Solo GPU antiguo sin fusionar kernels
+make run N=lbm_gpu_original_con_dump.cu 
+
+3. Primera version heterogeneo estático
+make run N=lbm_heterogeneo_v2.cu             # FP64
+
+4. Heterogeneo dinámico
+make run N=lbm_heterogeneo_dinamico.cu       # FP64
+cat 04_heterogeneo_dinamico/rebalanceo_log.csv   # el registro paso a paso del reequilibrio
+
+5. Heterogeneo de decisión automática
+make run N=lbm_heterogeneo_auto.cu                              # FP64
+make run N=lbm_heterogeneo_auto.cu PRECISION=fp32                # FP32
+make run N=lbm_heterogeneo_auto.cu PRECISION=fp32 NY=28000        # el caso grande que investigamos

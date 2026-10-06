@@ -1,0 +1,157 @@
+# ==============================================================================
+# Makefile del proyecto de TFG: LBM D2Q9 heterogeneo CPU+GPU
+#
+# Compila y ejecuta cualquiera de los .cu de src/gpu/ y src/hetero/.
+# (Las fases antiguas src/Phase*/ las gestiona el Makefile original.)
+# external/fluidx3d/ NO se compila aqui: son solo los dos ficheros de
+# configuracion que se modificaron en el repo de FluidX3D, que tiene su
+# propio sistema de compilacion (./make.sh) dentro de ~/FluidX3D.
+#
+# IMPORTANTE: se usa con  make -f Makefile.tfg <objetivo>
+# Los binarios van a bin/ y las salidas de cada ejecucion (f_final.bin,
+# f_final_original.bin, rebalanceo_log.csv...) a results/run/, donde tambien
+# se puede ejecutar:  python3 ../../tools/compara_resultados.py
+#
+# Uso:
+#   make -f Makefile.tfg list                        -> lista todos los .cu detectados, numerados
+#   make -f Makefile.tfg build                       -> menu interactivo para elegir uno y compilarlo
+#   make -f Makefile.tfg run                         -> menu interactivo: compila y ejecuta
+#   make -f Makefile.tfg build N=3                   -> compila el nº3 del menu, sin preguntar
+#   make -f Makefile.tfg run   N=3                   -> compila y ejecuta el nº3, sin preguntar
+#   make -f Makefile.tfg run   N=lbm_heterogeneo_auto.cu        -> tambien vale por nombre de archivo
+#   make -f Makefile.tfg run   N=3 PRECISION=fp32               -> igual, pero en precision simple (float)
+#   make -f Makefile.tfg run   N=3 NY=20000                     -> igual, pero cambia NY antes de compilar
+#                                                    (tambien vale NX= y STEPS=; nunca
+#                                                    tocan el .cu original, compilan
+#                                                    sobre una copia temporal en .make_tmp/)
+#   make -f Makefile.tfg clean                       -> borra bin/ y los .cu temporales generados
+#   make -f Makefile.tfg info                        -> muestra que archivos y flags detecta
+#
+# Ejemplo real (el mismo caso que dio +31% en el TFG):
+#   make -f Makefile.tfg run N=lbm_heterogeneo_auto.cu
+# ==============================================================================
+
+MAKEFILE_NAME := $(lastword $(MAKEFILE_LIST))
+NVCC       := nvcc
+NVCCFLAGS  := -O3 -arch=native
+BIN_DIR    := bin
+TMP_DIR    := .make_tmp
+RUN_DIR    := results/run
+
+# --- Carpetas con codigo compilable ---
+SRC_DIRS := src/gpu src/hetero
+
+# --- Todos los .cu encontrados en esas carpetas, en orden ---
+SOURCES     := $(sort $(foreach d,$(SRC_DIRS),$(wildcard $(d)/*.cu)))
+NUM_SOURCES := $(words $(SOURCES))
+
+# --- Precision: fp64 (double, por defecto) o fp32 (float, via PRECISION=fp32) ---
+ifeq ($(PRECISION),fp32)
+    PRECFLAGS  := -DUSE_SINGLE_PRECISION
+    PRECSUFFIX := _fp32
+else
+    PRECFLAGS  :=
+    PRECSUFFIX :=
+endif
+
+.PHONY: all list build run clean info check-src _build _run
+
+all: build
+
+list:
+	@echo "Archivos .cu detectados:"
+	@i=1; for f in $(SOURCES); do echo "  $$i) $$f"; i=$$((i+1)); done
+
+# Resuelve el fichero a usar: N= si viene dado (numero o nombre), si no menu
+# interactivo. Imprime SOLO la ruta resuelta a stdout (el resto va a stderr),
+# para poder capturarla con $$(...).
+define RESOLVE_SOURCE
+if [ -n "$(N)" ]; then \
+	req="$(N)"; \
+else \
+	i=1; for f in $(SOURCES); do echo "  $$i) $$f" >&2; i=$$((i+1)); done; \
+	printf "Selecciona un archivo [1-$(NUM_SOURCES)]: " >&2; \
+	read req; \
+fi; \
+if echo "$$req" | grep -qE '^[0-9]+$$'; then \
+	sel=$$(echo "$(SOURCES)" | tr ' ' '\n' | sed -n "$${req}p"); \
+else \
+	sel=""; \
+	for f in $(SOURCES); do \
+		[ "$$f" = "$$req" ] && sel="$$f"; \
+		[ "$$(basename $$f)" = "$$req" ] && sel="$$f"; \
+	done; \
+fi; \
+if [ -z "$$sel" ]; then \
+	echo "Archivo invalido: '$$req'. Usa 'make -f Makefile.tfg list' para ver las opciones." >&2; \
+else \
+	echo "$$sel"; \
+fi
+endef
+
+build:
+	@src=$$($(RESOLVE_SOURCE)); \
+	[ -n "$$src" ] || exit 1; \
+	$(MAKE) -f $(MAKEFILE_NAME) --no-print-directory _build SRC="$$src"
+
+run:
+	@src=$$($(RESOLVE_SOURCE)); \
+	[ -n "$$src" ] || exit 1; \
+	$(MAKE) -f $(MAKEFILE_NAME) --no-print-directory _run SRC="$$src"
+
+# Evita que _build/_run se invoquen directamente sin haber resuelto un archivo
+check-src:
+	@if [ -z "$(SRC)" ]; then \
+		echo "Error: usa 'make -f Makefile.tfg build' o 'make -f Makefile.tfg run' (no invoques este target directamente)."; \
+		exit 1; \
+	fi
+
+# --- Compilacion del fichero elegido ---
+# Si se paso NY=/NX=/STEPS=, primero genera una copia temporal con esos
+# valores sustituidos (igual que se hizo a mano con 'sed' durante todo el
+# proyecto); el .cu original en 0X_.../ nunca se toca.
+# Detecta solo si hace falta OpenMP mirando si el propio archivo usa
+# omp.h/#pragma omp (los de src/gpu no lo necesitan, los de
+# src/hetero si).
+_build: check-src
+	@mkdir -p $(BIN_DIR) $(TMP_DIR)
+	@real="$(SRC)"; \
+	name=$$(basename "$$real" .cu); \
+	tmp="$(TMP_DIR)/$$name.cu"; \
+	cp "$$real" "$$tmp"; \
+	[ -n "$(NY)" ]    && sed -i "s/const int NY = [0-9]*;/const int NY = $(NY);/" "$$tmp"; \
+	[ -n "$(NX)" ]    && sed -i "s/const int NX = [0-9]*;/const int NX = $(NX);/" "$$tmp"; \
+	[ -n "$(STEPS)" ] && sed -i "s/const int NUM_STEPS = [0-9]*;/const int NUM_STEPS = $(STEPS);/" "$$tmp"; \
+	extra=""; \
+	if grep -qE 'omp\.h|pragma omp' "$$tmp"; then extra="-Xcompiler -fopenmp -lgomp"; fi; \
+	out="$(BIN_DIR)/$${name}$(PRECSUFFIX)"; \
+	echo "Compilando $$real -> $$out"; \
+	if [ -n "$(NY)$(NX)$(STEPS)" ]; then echo "  (con NY=$(NY) NX=$(NX) STEPS=$(STEPS) sobre una copia temporal, el original no se toca)"; fi; \
+	$(NVCC) $(NVCCFLAGS) $(PRECFLAGS) $$extra "$$tmp" -o "$$out"; \
+	echo "Listo: $$out"
+
+# Ejecuta el binario ya compilado desde results/run/, para que las salidas
+# (f_final.bin, f_final_original.bin, rebalanceo_log.csv) queden juntas ahi
+# y no ensucien src/.
+_run: _build
+	@real="$(SRC)"; \
+	name=$$(basename "$$real" .cu); \
+	out="$(BIN_DIR)/$${name}$(PRECSUFFIX)"; \
+	mkdir -p $(RUN_DIR); \
+	echo "--- Ejecutando $$out (desde $(RUN_DIR)/) ---"; \
+	(cd "$(RUN_DIR)" && "$(CURDIR)/$$out")
+
+clean:
+	rm -rf $(BIN_DIR) $(TMP_DIR)
+	@echo "Limpiado bin/ y los ficheros temporales (.make_tmp/)."
+
+info:
+	@echo "========================================================="
+	@echo "               INFORMACION DEL PROYECTO"
+	@echo "========================================================="
+	@echo "Carpetas con codigo: $(SRC_DIRS)"
+	@echo "Archivos .cu:        $(NUM_SOURCES) encontrados (make -f Makefile.tfg list para verlos)"
+	@echo "nvcc detectado:      $$(command -v $(NVCC) || echo 'NO ENCONTRADO')"
+	@echo "Flags base:          $(NVCCFLAGS)"
+	@echo "Precision actual:    $(if $(PRECISION),$(PRECISION),fp64 (por defecto, pasa PRECISION=fp32 para float))"
+	@echo "========================================================="

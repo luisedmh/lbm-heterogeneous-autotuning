@@ -15,3 +15,4 @@ build/
 # Varios
 __pycache__/
 *.log
+results/run/
