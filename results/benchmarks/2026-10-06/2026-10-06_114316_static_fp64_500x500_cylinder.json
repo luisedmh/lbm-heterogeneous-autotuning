@@ -1,0 +1,53 @@
+{
+  "hostname": "PC-Casa",
+  "os": "Linux-6.8.0-138-generic-x86_64-with-glibc2.35",
+  "cpu_model": "AMD Ryzen 5 7600X 6-Core Processor",
+  "cpu_logical_cores": 12,
+  "cpu_governor": "powersave",
+  "gpu_name": "NVIDIA GeForce RTX 3060 Ti",
+  "gpu_driver": "610.43.02",
+  "gpu_memory_total_mib": "8192",
+  "gpu_max_sm_clock_mhz": "2130",
+  "gpu_max_mem_clock_mhz": "9501",
+  "gpu_power_limit_w": "265.00",
+  "nvcc": "Build cuda_13.3.r13.3/compiler.37862127_0",
+  "omp_num_threads_env": null,
+  "python": "3.10.12",
+  "sweep_id": "2026-10-06_114316_static_fp64_500x500_cylinder",
+  "command": "scripts/benchmark.py --grid 500x500 --obstacle cylinder square --reps 2 --steps 300 --cooldown 1 --alpha 0.5 0.7",
+  "config": {
+    "precision": "FP64",
+    "NX": 500,
+    "NY": 500,
+    "obstacle": "cylinder",
+    "splits_ny_gpu": [
+      250,
+      350
+    ],
+    "reps": 2,
+    "steps": 300,
+    "warmup": 100
+  },
+  "args": {
+    "precision": "['fp64']",
+    "grid": "[(500, 500)]",
+    "obstacle": "['cylinder', 'square']",
+    "ny_gpu": "None",
+    "alpha": "[0.5, 0.7]",
+    "reps": "2",
+    "steps": "300",
+    "warmup": "100",
+    "threads": "None",
+    "cooldown": "1.0",
+    "sample_ms": "500",
+    "label": "static",
+    "seed": "12345",
+    "no_shuffle": "False",
+    "no_warmup_run": "False",
+    "no_build": "False",
+    "outdir": "/home/luis/Documents/Proyectos/Informática/HPC/LMB_Autotuning/results/benchmarks"
+  },
+  "git_commit": "f093b8f",
+  "git_dirty": true,
+  "started": "2026-10-06T11:43:16"
+}
