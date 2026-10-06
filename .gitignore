@@ -16,3 +16,4 @@ build/
 __pycache__/
 *.log
 results/run/
+.venv/
