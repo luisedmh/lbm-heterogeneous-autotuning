@@ -1,105 +1,67 @@
 #!/usr/bin/env python3
 """
-analyze.py - resume los CSV de benchmark.py: MLUPS de la GPU y de la CPU por reparto.
+analyze.py - resume en terminal los MLUPS de GPU y de CPU de todas las medidas guardadas.
 
-Para cada precision y reparto (ny_gpu = filas que procesa la GPU) calcula la media
-de las repeticiones de:
-  - MLUPS_GPU : velocidad del lado GPU medida dentro del programa heterogeneo
-  - MLUPS_CPU : velocidad del lado CPU medida dentro del programa heterogeneo
-  - MLUPS_total, su variabilidad (CV %) y los tiempos por paso de cada lado.
+Sin argumentos lee TODO results/benchmarks/ (todas las carpetas de dias). Para cada
+configuracion (precision | tamano de malla | obstaculo) imprime la media por reparto.
 
 Uso:
-  python3 scripts/analyze.py results/benchmarks/XXXX.csv [mas.csv ...]
-Escribe, junto al primer CSV, summary_<nombre>.csv (lo lee tambien el dashboard).
+  python3 scripts/analyze.py                                   # todo lo guardado
+  python3 scripts/analyze.py --precision FP64 --grid 1000x1000 # solo una parte
+  python3 scripts/analyze.py --obstacle square --desde 2026-10-07
+  python3 scripts/analyze.py results/benchmarks/2026-10-06     # solo una carpeta (o un CSV)
+  python3 scripts/analyze.py --out results/resumen.csv         # ademas guarda la tabla resumen
 """
-import os
+import argparse
 import sys
 from pathlib import Path
 
-# El analisis es minusculo: que numpy/BLAS no abra una piscina de hilos que compita con un benchmark
-# que ocupe todos los nucleos.
-for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-    os.environ[_v] = "1"
-
-import argparse
-
-import pandas as pd
-
-NUM_COLS = ["NX", "NY", "ny_gpu", "ny_cpu", "steps", "warmup", "n_samples", "omp_threads", "mlups_total",
-            "t_total_s", "t_step_ms_mean", "t_step_ms_std", "t_step_ms_median", "t_gpu_ms_mean",
-            "t_gpu_ms_std", "t_gpu_ms_median", "t_cpu_ms_mean", "t_cpu_ms_std", "t_cpu_ms_median",
-            "gpu_side_mlups", "cpu_side_mlups", "gpu_temp_start", "gpu_temp_max", "gpu_sm_clock_mean",
-            "gpu_power_max", "cpu_mhz_start", "cpu_mhz_end", "order", "rep", "returncode"]
-
-
-def load(paths):
-    frames = []
-    for p in paths:
-        if Path(p).name.startswith(("summary_", "model_", "fit_")):
-            continue            # ficheros derivados: un glob *.csv puede incluirlos
-        df = pd.read_csv(p)
-        if "returncode" not in df.columns or "ny_gpu" not in df.columns:
-            continue            # no es un CSV del barrido de repartos
-        df["source_file"] = Path(p).name
-        frames.append(df)
-    if not frames:
-        sys.exit("No hay CSV del barrido de repartos entre los ficheros indicados.")
-    df = pd.concat(frames, ignore_index=True)
-    for c in NUM_COLS:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-    return df[(df["returncode"] == 0) & df["mlups_total"].notna()].copy()
-
-
-def summarize(df):
-    """Una fila por (precision, reparto) con las medias de las repeticiones."""
-    agg = df.groupby(["precision", "ny_gpu"]).agg(
-        n=("mlups_total", "size"),
-        gpu_side_mlups=("gpu_side_mlups", "mean"), cpu_side_mlups=("cpu_side_mlups", "mean"),
-        mlups_mean=("mlups_total", "mean"), mlups_std=("mlups_total", "std"),
-        mlups_min=("mlups_total", "min"), mlups_max=("mlups_total", "max"),
-        t_gpu_ms=("t_gpu_ms_mean", "mean"), t_cpu_ms=("t_cpu_ms_mean", "mean"),
-        t_step_ms=("t_step_ms_mean", "mean"),
-        gpu_temp_max=("gpu_temp_max", "mean"), gpu_clock=("gpu_sm_clock_mean", "mean"),
-    ).reset_index()
-    agg["mlups_cv_pct"] = 100.0 * agg["mlups_std"] / agg["mlups_mean"]
-    agg["ny_cpu"] = df["NY"].iloc[0] - agg["ny_gpu"]
-    return agg
-
-
-def report(prec, d, summ):
-    NX, NY = int(d["NX"].iloc[0]), int(d["NY"].iloc[0])
-    print(f"\n{'=' * 78}\n PRECISION {prec}   ({len(d)} ejecuciones, {d['ny_gpu'].nunique()} repartos, {NX}x{NY})\n{'=' * 78}")
-    cols = ["ny_gpu", "ny_cpu", "n", "gpu_side_mlups", "cpu_side_mlups", "mlups_mean", "mlups_cv_pct",
-            "t_gpu_ms", "t_cpu_ms", "t_step_ms"]
-    show = summ[summ["precision"] == prec][cols].rename(columns={
-        "gpu_side_mlups": "MLUPS_GPU", "cpu_side_mlups": "MLUPS_CPU",
-        "mlups_mean": "MLUPS_total", "mlups_cv_pct": "CV_%"})
-    print(show.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
-    print("\n  MLUPS_GPU / MLUPS_CPU = velocidad de cada lado medida DENTRO del heterogeneo (celdas de ese lado /")
-    print("  tiempo que ese lado tarda en un paso). Media de las repeticiones de cada reparto.")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bench_data as bd  # noqa: E402
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("csv", nargs="+", type=Path)
+    ap.add_argument("paths", nargs="*", type=Path, help="CSV o carpetas (defecto: results/benchmarks)")
+    ap.add_argument("--precision", nargs="+", help="p. ej. FP64 FP32")
+    ap.add_argument("--grid", nargs="+", help="p. ej. 1000x1000")
+    ap.add_argument("--obstacle", nargs="+", help="p. ej. cylinder square")
+    ap.add_argument("--desde", help="fecha minima AAAA-MM-DD")
+    ap.add_argument("--hasta", help="fecha maxima AAAA-MM-DD")
+    ap.add_argument("--out", type=Path, help="guardar aqui la tabla resumen (CSV)")
     args = ap.parse_args()
-    args.csv = [p for p in args.csv if not p.name.startswith(("summary_", "model_", "fit_"))]
 
-    print(f"[analyze] leyendo {len(args.csv)} fichero(s) ...", flush=True)
-    df = load(args.csv)
+    df = bd.load_all(args.paths or None)
     if df.empty:
-        sys.exit("No hay filas validas en los CSV (todas con returncode != 0 o sin BENCH_RESULT).")
-    print(f"[analyze] {len(df)} ejecuciones validas", flush=True)
-    summ = summarize(df)
-    for prec in sorted(df["precision"].unique()):
-        report(prec, df[df["precision"] == prec], summ)
+        sys.exit("No hay medidas validas. Genera datos con:  python3 scripts/benchmark.py")
+    if args.precision:
+        df = df[df["precision"].isin([p.upper() for p in args.precision])]
+    if args.grid:
+        df = df[df["grid"].isin(args.grid)]
+    if args.obstacle:
+        df = df[df["obstacle"].isin(args.obstacle)]
+    if args.desde:
+        df = df[df["date"] >= args.desde]
+    if args.hasta:
+        df = df[df["date"] <= args.hasta]
+    if df.empty:
+        sys.exit("Ninguna medida cumple esos filtros.")
 
-    base = args.csv[0]
-    stem = base.stem if len(args.csv) == 1 else base.stem + "_y_otros"
-    summ_path = base.with_name(f"summary_{stem}.csv")
-    summ.to_csv(summ_path, index=False)
-    print(f"\n[ok] {summ_path}")
+    print(f"[analyze] {len(df)} ejecuciones, {df['sweep_id'].nunique()} barridos, "
+          f"{df['config'].nunique()} configuraciones, dias {df['date'].min()} .. {df['date'].max()}")
+    summ = bd.summarize(df, ["precision", "grid", "obstacle", "NX", "NY", "ny_gpu"])
+    cols = ["ny_gpu", "n", "gpu_mlups", "cpu_mlups", "total_mlups", "total_cv_pct", "t_gpu_ms", "t_cpu_ms", "t_step_ms"]
+    names = {"gpu_mlups": "MLUPS_GPU", "cpu_mlups": "MLUPS_CPU", "total_mlups": "MLUPS_total", "total_cv_pct": "CV_%"}
+    for (prec, grid, obs), g in summ.groupby(["precision", "grid", "obstacle"]):
+        dd = df[(df["precision"] == prec) & (df["grid"] == grid) & (df["obstacle"] == obs)]
+        print(f"\n{'=' * 78}\n {prec} | malla {grid} (columnas x filas) | obstaculo {obs}   "
+              f"[{len(dd)} ejecuciones, dias: {', '.join(sorted(dd['date'].unique()))}]\n{'=' * 78}")
+        print(g.sort_values("ny_gpu")[cols].rename(columns=names).to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+    print("\nMLUPS_GPU / MLUPS_CPU = velocidad de cada lado medida DENTRO del heterogeneo; media de las repeticiones.")
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        summ.to_csv(args.out, index=False)
+        print(f"[ok] {args.out}")
 
 
 if __name__ == "__main__":
