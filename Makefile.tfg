@@ -1,7 +1,7 @@
 # ==============================================================================
 # Makefile del proyecto de TFG: LBM D2Q9 heterogeneo CPU+GPU
 #
-# Compila y ejecuta cualquiera de los .cu de src/gpu/ y src/hetero/.
+# Compila y ejecuta cualquiera de los .cu / .cpp de src/gpu/, src/hetero/ y src/cpu/.
 # (Las fases antiguas src/Phase*/ las gestiona el Makefile original.)
 # external/fluidx3d/ NO se compila aqui: son solo los dos ficheros de
 # configuracion que se modificaron en el repo de FluidX3D, que tiene su
@@ -39,10 +39,10 @@ TMP_DIR    := .make_tmp
 RUN_DIR    := results/run
 
 # --- Carpetas con codigo compilable ---
-SRC_DIRS := src/gpu src/hetero
+SRC_DIRS := src/gpu src/hetero src/cpu
 
 # --- Todos los .cu encontrados en esas carpetas, en orden ---
-SOURCES     := $(sort $(foreach d,$(SRC_DIRS),$(wildcard $(d)/*.cu)))
+SOURCES     := $(sort $(foreach d,$(SRC_DIRS),$(wildcard $(d)/*.cu $(d)/*.cpp)))
 NUM_SOURCES := $(words $(SOURCES))
 
 # --- Precision: fp64 (double, por defecto) o fp32 (float, via PRECISION=fp32) ---
@@ -59,7 +59,7 @@ endif
 all: build
 
 list:
-	@echo "Archivos .cu detectados:"
+	@echo "Archivos fuente detectados:"
 	@i=1; for f in $(SOURCES); do echo "  $$i) $$f"; i=$$((i+1)); done
 
 # Resuelve el fichero a usar: N= si viene dado (numero o nombre), si no menu
@@ -116,8 +116,8 @@ check-src:
 _build: check-src
 	@mkdir -p $(BIN_DIR) $(TMP_DIR)
 	@real="$(SRC)"; \
-	name=$$(basename "$$real" .cu); \
-	tmp="$(TMP_DIR)/$$name.cu"; \
+	name=$$(basename "$$real"); ext="$${name##*.}"; name="$${name%.*}"; \
+	tmp="$(TMP_DIR)/$$name.$$ext"; \
 	cp "$$real" "$$tmp"; \
 	[ -n "$(NY)" ]    && sed -i "s/const int NY = [0-9]*;/const int NY = $(NY);/" "$$tmp"; \
 	[ -n "$(NX)" ]    && sed -i "s/const int NX = [0-9]*;/const int NX = $(NX);/" "$$tmp"; \
@@ -135,7 +135,7 @@ _build: check-src
 # y no ensucien src/.
 _run: _build
 	@real="$(SRC)"; \
-	name=$$(basename "$$real" .cu); \
+	name=$$(basename "$$real"); name="$${name%.*}"; \
 	out="$(BIN_DIR)/$${name}$(PRECSUFFIX)"; \
 	mkdir -p $(RUN_DIR); \
 	echo "--- Ejecutando $$out (desde $(RUN_DIR)/) ---"; \
@@ -150,7 +150,7 @@ info:
 	@echo "               INFORMACION DEL PROYECTO"
 	@echo "========================================================="
 	@echo "Carpetas con codigo: $(SRC_DIRS)"
-	@echo "Archivos .cu:        $(NUM_SOURCES) encontrados (make -f Makefile.tfg list para verlos)"
+	@echo "Archivos fuente:     $(NUM_SOURCES) encontrados (make -f Makefile.tfg list para verlos)"
 	@echo "nvcc detectado:      $$(command -v $(NVCC) || echo 'NO ENCONTRADO')"
 	@echo "Flags base:          $(NVCCFLAGS)"
 	@echo "Precision actual:    $(if $(PRECISION),$(PRECISION),fp64 (por defecto, pasa PRECISION=fp32 para float))"
