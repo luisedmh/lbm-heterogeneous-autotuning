@@ -1,0 +1,3 @@
+[submodule "external/FluidX3D-src"]
+	path = external/FluidX3D-src
+	url = https://github.com/ProjectPhysX/FluidX3D.git
